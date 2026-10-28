@@ -51,8 +51,9 @@ class FairPlayEmulator:
             raise FileNotFoundError(f"AirPlayReceiver dylib not found at {receiver}")
         log.warning("FairPlay emulator: warming up (%s serve) — this takes ~35s...",
                     self.fp_emu_py)
+        # -I: don't put this package's directory on sys.path, or our types.py shadows the stdlib's.
         self._proc = subprocess.Popen(
-            [self.python_exe, self.fp_emu_py, receiver, "serve", "fast"],
+            [self.python_exe, "-I", self.fp_emu_py, receiver, "serve", "fast"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1,
         )

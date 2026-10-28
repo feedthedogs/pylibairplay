@@ -1,6 +1,6 @@
 [project]
 name = "pylibairplay"
-version = "0.1.0"
+version = "0.1.1"
 description = "AirPlay screen-mirroring receiver in pure Python"
 readme = "README.md"
 license = "MIT"
