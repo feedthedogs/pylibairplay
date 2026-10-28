@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+dist/
+.pytest_cache/
+
+# Device capture artifacts (contain device-specific data; not for the repo)
+*.jsonl
+mirror.bin
+
+# decoded proof frames (contain the user screen)
+decoded_frame.*
+
+# Recorded FairPlay session vectors (device-specific; machine-local)
+tests/vectors/
