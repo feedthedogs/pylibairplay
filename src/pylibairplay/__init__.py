@@ -1,6 +1,6 @@
 """pylibairplay — AirPlay screen-mirroring receiver."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 from . import codec, discovery, features, keys
 from .pairing import setup as pairing_setup

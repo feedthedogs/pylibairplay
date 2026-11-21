@@ -78,6 +78,18 @@ def align_down(x): return x & ~(PAGE - 1)
 def align_up(x): return (x + PAGE - 1) & ~(PAGE - 1)
 
 
+def _coalesce(pages, page):
+    """Merge a list of page-aligned addresses into (start, length) contiguous runs, so a
+    whole segment maps in one uc.mem_map call instead of thousands."""
+    runs = []
+    for pg in sorted(pages):
+        if runs and pg == runs[-1][0] + runs[-1][1]:
+            runs[-1][1] += page
+        else:
+            runs.append([pg, page])
+    return [(s, n) for s, n in runs]
+
+
 # FairPlay v1 whitebox entry points (AirPlayReceiver, iOS 26.6): see
 # airplayReqProcessor_requestProcessFPSetup.
 APCU_FP_HWINFO = 0x2279de158  # AirPlaySupport!_APCUGetFairPlayHWInfoEx (ctx init)
@@ -126,6 +138,11 @@ def main() -> None:
         if not os.path.exists(fp):
             continue
         b = lief.MachO.parse(fp).at(0)
+        # Collect the pages this dylib needs, then map them in coalesced contiguous runs.
+        # Mapping page-by-page is quadratic in Unicorn (it was ~30s for AirPlaySender's 4k
+        # pages); one mem_map per contiguous run instead keeps warm-up to a second or two.
+        writes = []
+        need = []
         for seg in b.segments:
             va, vsz = seg.virtual_address, seg.virtual_size
             if va == 0 or vsz == 0:
@@ -133,12 +150,16 @@ def main() -> None:
             base, end = align_down(va), align_up(va + vsz)
             for pg in range(base, end, PAGE):
                 if pg not in mapped_pages:
-                    uc.mem_map(pg, PAGE); mapped_pages.add(pg)
+                    need.append(pg); mapped_pages.add(pg)
             content = bytes(seg.content)
             if content:
-                uc.mem_write(va, content)
+                writes.append((va, content))
             if seg.name.startswith("__TEXT"):
                 text_ranges.append((va, va + vsz))
+        for run_start, run_len in _coalesce(need, PAGE):
+            uc.mem_map(run_start, run_len)
+        for va, content in writes:
+            uc.mem_write(va, content)
         for sec in b.sections:
             if sec.name == "__text" and sec.virtual_address:
                 code_sections.append((sec.virtual_address, sec.virtual_address + sec.size))
