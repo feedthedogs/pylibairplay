@@ -80,6 +80,13 @@ class ScreenStream:
             if len(self._buf) < _HDR + ln:
                 break
             ts = struct.unpack_from("<Q", self._buf, 8)[0]
+            if typ in (_T_VIDEO, _T_KEYFRAME):
+                # Encrypted frames: decrypt straight from the buffer, no intermediate copy.
+                with memoryview(self._buf) as mv:
+                    payload = self._dec.update(mv[_HDR:_HDR + ln])
+                del self._buf[:_HDR + ln]
+                self._video(typ, payload, ts, ln)
+                continue
             payload = bytes(self._buf[_HDR:_HDR + ln])
             del self._buf[:_HDR + ln]
             self._frame(typ, payload, ts)
@@ -106,13 +113,15 @@ class ScreenStream:
         if typ not in (_T_VIDEO, _T_KEYFRAME):
             log.warning("screen: unknown frame type %#x (%d B)", typ, len(payload))
             return
-        clear = self._dec.update(payload)   # continuous AES-CTR
+        self._video(typ, self._dec.update(payload), ts, len(payload))  # continuous AES-CTR
+
+    def _video(self, typ: int, clear: bytes, ts: int, wire_len: int) -> None:
         try:
-            annexb = codec.avcc_to_annexb(clear, self._length_size)
+            annexb, idr = codec.avcc_to_annexb_idr(clear, self._length_size)
         except Exception:
             log.exception("screen: bad AVCC frame")
             return
-        if payload and not annexb:
+        if wire_len and not annexb:
             # Garbage after decrypt: almost always a wrong stream key/iv. Drop it rather
             # than hand the decoder empty access units, and say so loudly.
             self.bad_frames += 1
@@ -120,16 +129,10 @@ class ScreenStream:
                 log.error("screen: %d encrypted frame(s) did not decrypt to valid H.264 "
                           "(wrong stream key?)", self.bad_frames)
             return
-        keyframe = typ == _T_KEYFRAME or _has_idr(annexb)
+        keyframe = typ == _T_KEYFRAME or idr
         data = (self._sps_pps + annexb) if (keyframe and self._sps_pps) else annexb
         self.frames += 1
         self.on_video(VideoAccessUnit(
             data=data, codec=Codec.H264, pts=ts / 1_000_000_000.0,
             keyframe=keyframe, width=self.width, height=self.height))
 
-
-def _has_idr(annexb: bytes) -> bool:
-    for nal in codec.annexb_nalus(annexb):
-        if nal and (nal[0] & 0x1f) == 5:
-            return True
-    return False

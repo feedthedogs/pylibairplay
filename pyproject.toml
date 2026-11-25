@@ -1,6 +1,6 @@
 [project]
 name = "pylibairplay"
-version = "0.1.2"
+version = "0.2.0"
 description = "AirPlay screen-mirroring receiver in pure Python"
 readme = "README.md"
 license = "MIT"
@@ -20,10 +20,7 @@ requires = ["uv_build>=0.10.12,<0.11.0"]
 build-backend = "uv_build"
 
 [project.optional-dependencies]
-# Runtime deps are added as milestones land. mDNS + crypto for discovery/pairing.
 net = ["zeroconf>=0.132", "cryptography>=43"]
-# Runs the FairPlay emulator (pylibairplay/fp_emu.py) in this same interpreter.
-fairplay = ["unicorn>=2", "lief>=0.14", "capstone>=5"]
 
 [dependency-groups]
 dev = ["pytest>=9"]

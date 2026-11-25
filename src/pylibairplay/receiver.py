@@ -25,7 +25,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .discovery import Advertiser, ReceiverInfo
 from .fairplay_v1 import FP_PHASE1_REPLIES, phase1_reply, phase2_reply
-from .mfi import MFiCredentials
 from .mirror import MirrorServer
 from .rtsp.secure import SecureChannel
 from .rtsp.server import MessageParser, Request, Response
@@ -49,41 +48,18 @@ class Receiver:
         capture_path: str | None = None,
         pin: str = "3939",
         state_path: str | None = None,
-        legacy: bool = False,
+        legacy: bool = True,
         fp_capture_path: str | None = None,
-        fp_emu_dir: str | None = None,
-        fp_emu_python: str | None = None,
         setup_capture_path: str | None = None,
         fp_vectors_path: str | None = None,
-        mfi: MFiCredentials | None = None,
     ) -> None:
         self.name = name
         self.port = port
         self.bind = bind
-        self.capture_path = capture_path  # dump raw mirror bytes for M4 analysis
+        self.capture_path = capture_path
         self.pin = pin.encode()
-        # Legacy FairPlay (/fp-setup) capture mode: advertise the legacy AirPlay-1
-        # feature set so iOS uses the legacy screen path, and record its /fp-setup
-        # requests to fp_capture_path (JSONL) for the whitebox emulator.
         self.legacy = legacy
-        # Optional MFi certificate + signer. When set (and not legacy) the receiver takes the
-        # AirPlay 2 pairing path: it advertises transient pairing and proves the certificate
-        # at pair-setup M4, so no FairPlay emulation is needed (spec 60 Finding 7).
-        self.mfi = mfi
-        if mfi is not None and legacy:
-            raise ValueError("mfi credentials apply to the AirPlay 2 path; do not combine with legacy=True")
-        if mfi is not None:
-            try:
-                mfi.check()
-            except Exception as e:  # unusual containers may not parse locally; iOS is the judge
-                log.warning("MFi credentials failed the local self-check: %s", e)
         self.fp_capture_path = fp_capture_path
-        # Optional live FairPlay phase-2 via the firmware whitebox emulator.
-        # fp_emu_dir = directory with the extracted AirPlayReceiver + sibling dylibs;
-        # fp_emu_python = interpreter with unicorn/lief/capstone. Machine-local interop.
-        self.fp_emu_dir = fp_emu_dir
-        self.fp_emu_python = fp_emu_python
-        self._fp_emu = None               # FairPlayEmulator (started in serve())
         self._fp_last_phase1: bytes | None = None
         self._fp_last_phase2: bytes | None = None
         self._fp_last_phase2_reply: bytes | None = None
@@ -166,13 +142,10 @@ class Receiver:
         FairPlay/HLS (playbackCapabilities) is for video casting, not mirroring, so
         it is omitted.
         """
-        from .discovery import DEFAULT_FEATURES, LEGACY_FEATURES, FULL_AP2_FEATURES
+        from .discovery import DEFAULT_FEATURES, LEGACY_FEATURES
 
         pk = self.identity.public_key().public_bytes_raw()
         if self.legacy:
-            # Legacy /info: AirPlay-1 feature set (steers iOS to the /fp-setup screen
-            # path) PLUS a `displays` array — screen mirroring needs the receiver's
-            # display geometry, or iOS tears down after RECORD without a stream setup.
             return {
                 "deviceID": self.device_id,
                 "name": self.name,
@@ -185,8 +158,6 @@ class Receiver:
                 "statusFlags": 0x4,
                 "features": int(LEGACY_FEATURES),
                 "keepAliveLowPower": True,
-                # iOS reads displayCapabilities from GetInfo to decide the mirror
-                # geometry (sender logs "Display capabilities in GetInfo response").
                 "displayCapabilities": {
                     "widthPixels": 1920,
                     "heightPixels": 1080,
@@ -225,11 +196,8 @@ class Receiver:
             "protocolVersion": "1.1",
             "pi": self.device_id,
             "pk": pk,
-            # 0x244 set bit 9 (0x200)=OneTimePairingRequired, which steered iOS to the
-            # MFi one-time PIN flow (Method=1, unsatisfiable). Cleared -> 0x44 to aim
-            # for a Method=0 CoreUtils pair-setup.
             "statusFlags": 0x44,
-            "features": int(FULL_AP2_FEATURES if self.mfi else DEFAULT_FEATURES),
+            "features": int(DEFAULT_FEATURES),
             "keepAliveLowPower": True,
             "keepAliveSendStatsAsBody": True,
             "activeInterfaceType": 0,
@@ -258,23 +226,18 @@ class Receiver:
         }
 
     async def serve(self) -> None:
-        from .discovery import DEFAULT_FEATURES, LEGACY_FEATURES, FULL_AP2_FEATURES
+        from .discovery import DEFAULT_FEATURES, LEGACY_FEATURES
 
         pk = self.identity.public_key().public_bytes_raw()
         info = ReceiverInfo(
             name=self.name, device_id=self.device_id, public_key=pk, port=self.port,
-            features=int(LEGACY_FEATURES if self.legacy else FULL_AP2_FEATURES if self.mfi else DEFAULT_FEATURES),
-            legacy=self.legacy, mfi=self.mfi is not None,
+            features=int(LEGACY_FEATURES if self.legacy else DEFAULT_FEATURES),
+            legacy=self.legacy,
         )
         if self.legacy:
-            log.warning("LEGACY fp-setup capture mode: advertising AirPlay-1 features=%s%s",
-                        hex(LEGACY_FEATURES),
-                        f"; capturing to {self.fp_capture_path}" if self.fp_capture_path else "")
-        if self.legacy and self.fp_emu_dir:
-            from .fairplay import FairPlayEmulator
-            self._fp_emu = FairPlayEmulator(self.fp_emu_dir, python_exe=self.fp_emu_python)
-            # Warm-up blocks ~35s; run it off the event loop so advertising isn't delayed.
-            await asyncio.get_running_loop().run_in_executor(None, self._fp_emu.start)
+            log.info("advertising AirPlay-1 features=%s%s",
+                     hex(LEGACY_FEATURES),
+                     f"; capturing to {self.fp_capture_path}" if self.fp_capture_path else "")
         # Legacy screen mirroring: pre-open the event (TCP) + timing (UDP) servers so the
         # control SETUP can hand iOS real ports (eventPort:0 causes an immediate teardown).
         if self.legacy:
@@ -293,16 +256,12 @@ class Receiver:
         finally:
             if self._advertiser:
                 await self._advertiser.stop()
-            if self._fp_emu is not None:
-                self._fp_emu.stop()
 
     async def close(self) -> None:
         if self._server:
             self._server.close()
         if self._advertiser:
             await self._advertiser.stop()
-        if self._fp_emu is not None:
-            self._fp_emu.stop()
         if self._ntp_task is not None:
             self._ntp_task.cancel()
         if self._event_server is not None:
@@ -429,9 +388,9 @@ class Receiver:
 
     def _on_screen_stream(self, stream: dict, ekey: bytes | None, eiv: bytes | None) -> dict:
         """Open a data server for a legacy screen stream (type 110); return its dataPort.
-        Decrypt the ekey via the emulator, derive the per-stream AES-CTR key/iv, and build
-        the ScreenStream that turns the data port into VideoAccessUnits. Socket opened
-        synchronously so the port is known for the reply."""
+        The FairPlay ekey decrypt runs in a background thread so the SETUP response
+        returns immediately; incoming screen data is buffered until the decrypt
+        completes, then replayed."""
         import socket
         sock = socket.create_server((self.bind, 0))
         port = sock.getsockname()[1]
@@ -439,21 +398,45 @@ class Receiver:
         sock.setblocking(False)
         self._screen_ekey, self._screen_eiv = ekey, eiv
         self._screen = None
+        self._screen_pending: list[bytes] | None = None
         scid = int(stream.get("streamConnectionID", 0))
-        if (self._fp_emu is not None and ekey and self._fp_last_phase1 and self._fp_last_phase2):
-            try:
-                from .screen import ScreenStream, derive_stream_keys
-                secret = self._fp_emu.decrypt_ekey(self._fp_last_phase1, self._fp_last_phase2, ekey)
-                if len(secret) == 16:
-                    key, iv = derive_stream_keys(secret, scid)
-                    self._screen = ScreenStream(key, iv, self._deliver_video,
-                                                width=self._disp_w, height=self._disp_h)
-                    log.warning("screen: decrypt ready (scid=%d, key=%s…)", scid, key.hex()[:12])
-                    self._write_fp_vector(ekey, eiv, secret, scid)
-                else:
-                    log.error("screen: ekey decrypt failed (got %d bytes)", len(secret))
-            except Exception:
-                log.exception("screen: failed to set up decrypt")
+
+        if ekey and self._fp_last_phase1 and self._fp_last_phase2:
+            self._screen_pending = []
+            loop = asyncio.get_event_loop()
+
+            def _do_decrypt() -> bytes:
+                from .fp_setup import decrypt_ekey_full
+                return decrypt_ekey_full(self._fp_last_phase1, self._fp_last_phase2, ekey)
+
+            async def _finish_decrypt():
+                try:
+                    import time
+                    t0 = time.monotonic()
+                    secret = await loop.run_in_executor(None, _do_decrypt)
+                    elapsed = time.monotonic() - t0
+                    if len(secret) == 16:
+                        from .screen import ScreenStream, derive_stream_keys
+                        key, iv = derive_stream_keys(secret, scid)
+                        self._screen = ScreenStream(key, iv, self._deliver_video,
+                                                    width=self._disp_w, height=self._disp_h)
+                        pending = self._screen_pending or []
+                        self._screen_pending = None
+                        total = sum(len(c) for c in pending)
+                        for chunk in pending:
+                            self._screen.feed(chunk)
+                        log.info("screen: decrypt ready in %.1fs (scid=%d, key=%s…, "
+                                 "replayed %d chunks / %d bytes)",
+                                 elapsed, scid, key.hex()[:12], len(pending), total)
+                        self._write_fp_vector(ekey, eiv, secret, scid)
+                    else:
+                        self._screen_pending = None
+                        log.error("screen: ekey decrypt failed (got %d bytes)", len(secret))
+                except Exception:
+                    self._screen_pending = None
+                    log.exception("screen: failed to set up decrypt")
+
+            loop.create_task(_finish_decrypt())
 
         async def _serve():
             srv = await asyncio.start_server(self._handle_screen_data, sock=sock)
@@ -495,6 +478,8 @@ class Receiver:
                         f.write(data)
                 if self._screen is not None:
                     self._screen.feed(data)
+                elif self._screen_pending is not None:
+                    self._screen_pending.append(data)
         except Exception:
             log.exception("screen data error")
         finally:
@@ -503,6 +488,7 @@ class Receiver:
             n = self._screen.frames if self._screen is not None else 0
             log.warning("screen data from %s closed (%d bytes, %d video AUs)", peer, total, n)
             self._screen = None
+            self._screen_pending = None
             try:
                 self.on_end(EndReason.CLIENT_STOPPED)
             except Exception:
@@ -555,7 +541,6 @@ class Receiver:
             setup_capture_path=self.setup_capture_path,
             on_control_setup=self._on_control_setup if self.legacy else None,
             on_screen_stream=self._on_screen_stream if self.legacy else None,
-            mfi=self.mfi,
         )
         parser = MessageParser()
         secure: SecureChannel | None = None
@@ -635,16 +620,11 @@ def _main() -> None:
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--capture", help="dump raw mirror data-port bytes to this file (for protocol analysis)")
     parser.add_argument("--pin", default="3939", help="pairing PIN to enter on the iPhone (first time)")
-    parser.add_argument("--mfi-cert", help="MFi certificate (PEM/DER) for the AirPlay 2 path; needs --mfi-key")
-    parser.add_argument("--mfi-key", help="private key (PEM) matching --mfi-cert")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
-    if bool(args.mfi_cert) != bool(args.mfi_key):
-        parser.error("--mfi-cert and --mfi-key must be given together")
-    mfi = MFiCredentials.from_pem_files(args.mfi_cert, args.mfi_key) if args.mfi_cert else None
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    rx = Receiver(name=args.name, port=args.port, bind=args.bind, capture_path=args.capture, pin=args.pin, mfi=mfi)
+    rx = Receiver(name=args.name, port=args.port, bind=args.bind, capture_path=args.capture, pin=args.pin)
 
     frames = 0
 

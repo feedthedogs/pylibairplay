@@ -14,7 +14,6 @@ from collections.abc import Callable
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from . import keys
-from .mfi import MFiCredentials
 from .pairing import tlv8
 from .pairing.setup import PairingError, PairSetupServer, PairVerifyServer
 from .pairing.tlv8 import Tag
@@ -44,7 +43,6 @@ class ControlSession:
         setup_capture_path: str | None = None,
         on_control_setup: Callable[[dict], dict] | None = None,
         on_screen_stream: Callable[[dict, bytes | None, bytes | None], dict] | None = None,
-        mfi: MFiCredentials | None = None,
     ) -> None:
         self.identity = identity
         self.device_id = device_id
@@ -71,7 +69,7 @@ class ControlSession:
         self.fp_eiv: bytes | None = None    # AES IV from SETUP
         self.pairing_secret: bytes | None = None
         self.secure: SecureChannel | None = None
-        self._setup = PairSetupServer(pin=pin, identity=identity, device_id=device_id.encode(), mfi=mfi)
+        self._setup = PairSetupServer(pin=pin, identity=identity, device_id=device_id.encode())
         self._verify: PairVerifyServer | None = None
 
     def handle(self, req: Request) -> Response:

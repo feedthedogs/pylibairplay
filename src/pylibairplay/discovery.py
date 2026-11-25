@@ -51,7 +51,6 @@ class ReceiverInfo:
     source_version: str = "377.40.00"
     pin_required: bool = False
     legacy: bool = False  # AirPlay-1 fp-setup path (see LEGACY_FEATURES)
-    mfi: bool = False  # AP2 path with an MFi certificate: advertise transient pairing
     extra_txt: dict[str, str] = field(default_factory=dict)
 
     def txt_records(self) -> dict[bytes, bytes]:

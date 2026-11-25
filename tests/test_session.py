@@ -105,7 +105,7 @@ def test_fp_phase1_cached_reply():
 
 
 def test_fp_phase2_reply_is_pure():
-    """A phase-2 request is answered in pure Python (no emulator) and both requests are
+    """A phase-2 request is answered in pure Python and both requests are
     remembered for the later ekey decrypt."""
     from pylibairplay.receiver import Receiver
 
@@ -114,7 +114,6 @@ def test_fp_phase2_reply_is_pure():
     expected = bytes.fromhex("46504c590301040000000014" + "bb" * 20)
 
     rx = Receiver(name="t", legacy=True)
-    assert rx._fp_emu is None
     rx._fp_capture("/fp-setup", {}, phase1)
     assert rx._fp_capture("/fp-setup", {}, phase2) == expected
     assert (rx._fp_last_phase1, rx._fp_last_phase2) == (phase1, phase2)

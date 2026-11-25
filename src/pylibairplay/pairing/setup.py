@@ -27,7 +27,6 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 from .. import keys
-from ..mfi import MFiCredentials
 from . import tlv8
 from .srp import SrpServer
 from .tlv8 import Tag
@@ -61,7 +60,6 @@ class PairSetupServer:
     pin: bytes = DEFAULT_PIN
     identity: Ed25519PrivateKey | None = None
     device_id: bytes = b""
-    mfi: MFiCredentials | None = None  # certificate + signer, appended to M4 when set
     _srp: SrpServer | None = None
     _K: bytes = b""
     _client_flags: bytes | None = None  # client's M1 Flags TLV (0x13), echoed in M2
@@ -120,21 +118,7 @@ class PairSetupServer:
             self.pairing_secret = self._K
             self.completed = True
         m4: dict[int, bytes] = {Tag.STATE: bytes((STATE_M4,)), Tag.PROOF: m2}
-        if self.mfi is not None:
-            m4[Tag.ENCRYPTED_DATA] = self._mfi_m4_extra()
         return tlv8.encode(m4)
-
-    def _mfi_m4_extra(self) -> bytes:
-        """Encrypted M4 sub-TLV {Certificate, Signature} proving the receiver's MFi licence.
-
-        The signature covers a 32-byte challenge derived from the SRP key; the sub-TLV is
-        sealed with the pair-setup encryption key under nonce ``PS-Msg04`` (CoreUtils ``_MFiClientVerify`` / ``_ServerEncryptExtra``).
-        """
-        assert self.mfi is not None
-        challenge = keys.hkdf_sha512(self._K, keys.MFI_PAIR_SETUP_SALT, keys.MFI_PAIR_SETUP_INFO, 32)
-        sub = tlv8.encode({Tag.CERTIFICATE: self.mfi.certificate, Tag.SIGNATURE: self.mfi.sign(challenge)})
-        enc_key = keys.hkdf_sha512(self._K, keys.PAIR_SETUP_SALT, keys.PAIR_SETUP_INFO, 32)
-        return ChaCha20Poly1305(enc_key).encrypt(_setup_nonce(b"PS-Msg04"), sub, None)
 
     def _m5_to_m6(self, tlv: dict[int, bytes]) -> bytes:
         """Exchange long-term identities (HAP pair-setup M5/M6)."""

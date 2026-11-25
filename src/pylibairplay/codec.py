@@ -17,16 +17,27 @@ START_CODE = b"\x00\x00\x00\x01"
 
 def avcc_to_annexb(data: bytes, length_size: int = 4) -> bytes:
     """Convert a length-prefixed access unit to Annex-B start-code form."""
+    return avcc_to_annexb_idr(data, length_size)[0]
+
+
+def avcc_to_annexb_idr(data: bytes, length_size: int = 4) -> tuple[bytes, bool]:
+    """Like :func:`avcc_to_annexb`, also reporting whether an H.264 IDR slice (type 5)
+    is present. NAL boundaries are known here, so this avoids rescanning the output."""
     out = bytearray()
+    idr = False
+    mv = memoryview(data)
     i, n = 0, len(data)
     while i + length_size <= n:
-        nal_len = int.from_bytes(data[i : i + length_size], "big")
+        nal_len = int.from_bytes(mv[i : i + length_size], "big")
         i += length_size
         if nal_len == 0 or i + nal_len > n:
             break
-        out += START_CODE + data[i : i + nal_len]
+        if (data[i] & 0x1F) == 5:
+            idr = True
+        out += START_CODE
+        out += mv[i : i + nal_len]
         i += nal_len
-    return bytes(out)
+    return bytes(out), idr
 
 
 def annexb_nalus(data: bytes):
